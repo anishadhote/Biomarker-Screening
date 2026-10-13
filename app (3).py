@@ -1,0 +1,302 @@
+import hmac
+import pickle
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+st.set_page_config(page_title="Biomarker screening", layout="wide", initial_sidebar_state="collapsed")
+
+# ----------------------------------------------------------------------------
+# Styling
+# ----------------------------------------------------------------------------
+CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=Public+Sans:wght@400;500;600&display=swap');
+
+:root {
+  --bg: #EDF1EF;
+  --surface: #FBFCFB;
+  --ink: #16282C;
+  --muted: #5C6E70;
+  --line: #D3DCDA;
+  --accent: #0E5A60;
+  --accent-soft: #D9E8E6;
+  --flag: #A8651A;
+  --flag-soft: #F1E3CF;
+}
+
+/* hide Streamlit chrome */
+#MainMenu, footer, header, [data-testid="stToolbar"], [data-testid="stDecoration"] { display: none !important; }
+
+html, body, .stApp, [class*="css"] {
+  font-family: 'Public Sans', sans-serif;
+  color: var(--ink);
+}
+.stApp { background: var(--bg); }
+.block-container { max-width: 1120px; padding: 4rem 2rem 5rem; }
+
+/* masthead */
+.mast h1 {
+  font-family: 'Newsreader', serif;
+  font-weight: 400;
+  font-size: 3.4rem;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin: 0 0 1rem;
+  padding: 0;
+  color: var(--ink);
+}
+.mast p {
+  font-size: 1.05rem;
+  line-height: 1.6;
+  color: var(--muted);
+  max-width: 58ch;
+  margin: 0 0 3rem;
+}
+
+/* form sections */
+.sec { margin: 0 0 0.9rem; padding-top: 1.6rem; border-top: 1px solid var(--line); }
+.sec h3 {
+  font-family: 'Newsreader', serif;
+  font-weight: 500;
+  font-size: 1.45rem;
+  margin: 0 0 0.2rem;
+  padding: 0;
+  color: var(--ink);
+}
+.sec p { margin: 0; font-size: 0.9rem; color: var(--muted); }
+
+[data-testid="stForm"] { border: none; padding: 0; background: transparent; }
+[data-testid="stNumberInput"] label p, [data-testid="stTextInput"] label p {
+  font-size: 0.88rem; font-weight: 500; color: var(--ink);
+}
+[data-testid="stNumberInput"] div[data-baseweb="input"], [data-testid="stTextInput"] div[data-baseweb="input"] {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+[data-testid="stNumberInput"] div[data-baseweb="input"]:focus-within, [data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+[data-testid="stNumberInput"] input, [data-testid="stTextInput"] input { font-family: 'Public Sans', sans-serif; font-size: 1rem; }
+[data-testid="stNumberInputStepUp"], [data-testid="stNumberInputStepDown"] { display: none; }
+
+[data-testid="stFormSubmitButton"] button {
+  background: var(--accent);
+  border: none;
+  border-radius: 6px;
+  padding: 0.7rem 1.8rem;
+  margin-top: 1.2rem;
+}
+[data-testid="stFormSubmitButton"] button p {
+  color: #fff; font-weight: 600; font-size: 0.98rem;
+}
+[data-testid="stFormSubmitButton"] button:hover { background: #0A474C; }
+[data-testid="stFormSubmitButton"] button:focus-visible { outline: 3px solid var(--accent-soft); outline-offset: 2px; }
+
+/* result panel */
+.result {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 2rem 1.8rem;
+}
+.result.idle { background: transparent; border-style: dashed; }
+.result h2 {
+  font-family: 'Newsreader', serif;
+  font-weight: 400;
+  font-size: 2rem;
+  line-height: 1.15;
+  margin: 0 0 1.4rem;
+  padding: 0;
+}
+.result.idle h2 { color: var(--muted); font-size: 1.5rem; margin-bottom: 0.6rem; }
+.result p { font-size: 0.92rem; line-height: 1.55; color: var(--muted); margin: 0; }
+.result p.note { margin-top: 1.4rem; padding-top: 1.2rem; border-top: 1px solid var(--line); }
+
+.split { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); margin-bottom: 0.7rem; }
+.split span { display: block; height: 100%; transform-origin: left; animation: grow 0.7s ease-out; }
+.split .a { background: var(--accent); }
+.split .b { background: var(--flag); }
+@keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@media (prefers-reduced-motion: reduce) { .split span { animation: none; } }
+
+.legend { display: flex; justify-content: space-between; font-size: 0.88rem; color: var(--ink); }
+.legend b { font-weight: 600; }
+.legend .l::before, .legend .r::before {
+  content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px;
+}
+.legend .l::before { background: var(--accent); }
+.legend .r::before { background: var(--flag); }
+
+/* login */
+.login-head { margin: 5vh 0 2rem; }
+.login-head h1 {
+  font-family: 'Newsreader', serif; font-weight: 400; font-size: 2.6rem;
+  line-height: 1.1; letter-spacing: -0.02em; margin: 0 0 0.6rem; padding: 0;
+}
+.login-head p { font-size: 0.98rem; line-height: 1.55; color: var(--muted); margin: 0; }
+
+.st-key-signout button {
+  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+}
+.st-key-signout button p { color: var(--muted); font-size: 0.88rem; font-weight: 500; }
+.st-key-signout button:hover { border-color: var(--ink); }
+
+@media (max-width: 640px) {
+  .mast h1 { font-size: 2.5rem; }
+  .block-container { padding: 2.5rem 1.2rem 4rem; }
+}
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
+
+
+
+# ----------------------------------------------------------------------------
+# Login
+# ----------------------------------------------------------------------------
+def expected_password() -> str:
+    # Set APP_PASSWORD in .streamlit/secrets.toml (or Streamlit Cloud > Settings > Secrets)
+    # to override the default.
+    try:
+        return str(st.secrets.get("APP_PASSWORD", "1234@"))
+    except Exception:
+        return "1234@"
+
+
+if "authed" not in st.session_state:
+    st.session_state.authed = False
+
+if not st.session_state.authed:
+    _, mid, _ = st.columns([1, 1.3, 1])
+    with mid:
+        st.markdown(
+            """
+<div class="login-head">
+<h1>Biomarker screening</h1>
+<p>Enter the access password to continue.</p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+        with st.form("login", border=False):
+            pw = st.text_input("Password", type="password")
+            go = st.form_submit_button("Sign in")
+        if go:
+            if hmac.compare_digest(pw.encode(), expected_password().encode()):
+                st.session_state.authed = True
+                st.rerun()
+            else:
+                st.error("That password is not correct. Check it and try again.")
+    st.stop()
+
+# ----------------------------------------------------------------------------
+# Model
+# ----------------------------------------------------------------------------
+@st.cache_resource
+def load_artifacts():
+    with open("best_knn_model.pkl", "rb") as f:
+        model = pickle.load(f)
+    with open("scaler.pkl", "rb") as f:
+        scaler = pickle.load(f)
+    return model, scaler
+
+
+try:
+    model, scaler = load_artifacts()
+except Exception as e:
+    st.error(f"The model files could not be loaded: {e}")
+    st.stop()
+
+
+# ----------------------------------------------------------------------------
+# Page
+# ----------------------------------------------------------------------------
+st.markdown(
+    """
+<div class="mast">
+<h1>Biomarker screening</h1>
+<p>Enter nine routine body and blood measurements. The model compares them with 116 recorded cases and shows which group the profile sits closer to.</p>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+
+def section(title, hint):
+    st.markdown(f'<div class="sec"><h3>{title}</h3><p>{hint}</p></div>', unsafe_allow_html=True)
+
+
+left, gap, right = st.columns([5, 0.5, 4])
+
+with left:
+    with st.form("biomarkers", border=False):
+        section("Patient", "Basic details")
+        c1, c2 = st.columns(2)
+        age = c1.number_input("Age (years)", min_value=1, max_value=120, value=48)
+        bmi = c2.number_input("BMI (kg/m²)", min_value=10.0, max_value=60.0, value=23.5, step=0.1)
+
+        section("Glucose metabolism", "From a fasting blood test")
+        c1, c2, c3 = st.columns(3)
+        glucose = c1.number_input("Glucose (mg/dL)", min_value=10, max_value=500, value=70)
+        insulin = c2.number_input("Insulin (µU/mL)", min_value=1.0, max_value=100.0, value=2.7, step=0.1)
+        homa = c3.number_input("HOMA-IR", min_value=0.1, max_value=30.0, value=0.46, step=0.01)
+
+        section("Blood markers", "Hormones and inflammation signals measured in serum")
+        c1, c2 = st.columns(2)
+        leptin = c1.number_input("Leptin (ng/mL)", min_value=1.0, max_value=120.0, value=8.8, step=0.1)
+        adiponectin = c2.number_input("Adiponectin (µg/mL)", min_value=1.0, max_value=50.0, value=9.7, step=0.1)
+        c3, c4 = st.columns(2)
+        resistin = c3.number_input("Resistin (ng/mL)", min_value=1.0, max_value=100.0, value=8.0, step=0.1)
+        mcp_1 = c4.number_input("MCP-1 (pg/mL)", min_value=10.0, max_value=2000.0, value=417.1, step=1.0)
+
+        submitted = st.form_submit_button("Run check")
+
+with right:
+    if not submitted:
+        st.markdown(
+            """
+<div class="result idle">
+<h2>No result yet</h2>
+<p>Fill in the measurements and select Run check. The result will appear here.</p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+    else:
+        row = pd.DataFrame(
+            [[age, bmi, glucose, insulin, homa, leptin, adiponectin, resistin, mcp_1]],
+            columns=["age", "bmi", "glucose", "insulin", "homa", "leptin", "adiponectin", "resistin", "mcp_1"],
+        )
+        scaled = scaler.transform(row.values)
+        prediction = model.predict(scaled)[0]
+        proba = dict(zip(model.classes_, model.predict_proba(scaled)[0]))
+
+        p_healthy = float(proba.get(1, 0.0)) * 100
+        p_patient = float(proba.get(2, 0.0)) * 100
+
+        headline = "Closer to the patient group" if prediction == 2 else "Closer to the healthy control group"
+
+        st.markdown(
+            f"""
+<div class="result">
+<h2>{headline}</h2>
+<div class="split"><span class="a" style="width:{p_healthy:.1f}%"></span><span class="b" style="width:{p_patient:.1f}%"></span></div>
+<div class="legend">
+<span class="l">Healthy control <b>{p_healthy:.0f}%</b></span>
+<span class="r">Patient <b>{p_patient:.0f}%</b></span>
+</div>
+<p class="note">This compares the entered values with similar recorded cases. It is a screening aid, not a diagnosis. A clinician should review any result.</p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+
+st.markdown("<div style='height:2.5rem'></div>", unsafe_allow_html=True)
+if st.button("Sign out", key="signout"):
+    st.session_state.authed = False
+    st.rerun()
