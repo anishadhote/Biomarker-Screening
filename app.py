@@ -1,4 +1,9 @@
+import hashlib
 import hmac
+import json
+import os
+import re
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -150,6 +155,17 @@ html, body, .stApp, [class*="css"] {
 [data-testid="stNumberInput"] input::placeholder { color: #7D8F8D; opacity: 1; }
 .calc { margin-top: 1.2rem !important; color: var(--ink) !important; }
 
+/* accounts */
+.hint {
+  background: var(--accent-soft); border: 1px solid #B5D0CD; border-radius: 6px;
+  padding: 0.8rem 1rem; margin: 0 0 1.2rem; font-size: 0.88rem; line-height: 1.55; color: var(--ink);
+}
+.hint b { font-weight: 600; }
+[data-baseweb="tab"] p { font-family: 'Public Sans', sans-serif; font-weight: 500; font-size: 0.95rem; }
+[data-baseweb="tab-highlight"] { background-color: var(--accent) !important; }
+[data-testid="stExpander"] { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+[data-testid="stExpander"] summary p { font-weight: 500; font-size: 0.92rem; }
+
 /* login */
 .login-head { margin: 5vh 0 2rem; }
 .login-head h1 {
@@ -175,22 +191,71 @@ st.markdown(CSS, unsafe_allow_html=True)
 
 
 # ----------------------------------------------------------------------------
-# Login
+# Accounts
 # ----------------------------------------------------------------------------
-def expected_user() -> str:
-    try:
-        return str(st.secrets.get("APP_USER", "anisha26@"))
-    except Exception:
-        return "anisha26@"
+# Accounts are stored (with salted password hashes, never plain text) in users.json next to app.py.
+# On Streamlit Community Cloud this file is cleared when the app restarts or is redeployed.
+USERS_FILE = Path(__file__).parent / "users.json"
+MIN_PASSWORD = 6
 
 
-def expected_password() -> str:
-    # Set APP_PASSWORD and APP_USER in .streamlit/secrets.toml (or Streamlit Cloud > Settings > Secrets)
-    # to override the defaults.
+def _secret(name):
     try:
-        return str(st.secrets.get("APP_PASSWORD", "1234@"))
+        value = st.secrets.get(name)
+        return None if value is None else str(value)
     except Exception:
-        return "1234@"
+        return None
+
+
+# Optional overrides: set APP_USER and APP_PASSWORD in Streamlit Secrets to change the default account.
+DEFAULT_USER = (_secret("APP_USER") or "anisha26@").lower()
+DEFAULT_PW = _secret("APP_PASSWORD") or "1234@"
+SHOW_DEFAULTS = _secret("APP_PASSWORD") is None  # the default password is shown on the login page
+
+
+def load_users() -> dict:
+    try:
+        return json.loads(USERS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_users(users: dict) -> bool:
+    try:
+        tmp = USERS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(users), encoding="utf-8")
+        os.replace(tmp, USERS_FILE)
+        return True
+    except Exception:
+        return False
+
+
+def make_record(password: str) -> dict:
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200_000)
+    return {"salt": salt.hex(), "hash": digest.hex()}
+
+
+def matches(password: str, record: dict) -> bool:
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(record["salt"]), 200_000)
+    return hmac.compare_digest(digest.hex(), record["hash"])
+
+
+def check_login(uid: str, password: str):
+    """Return the account ID if the login is valid, otherwise None. An empty ID means the default account."""
+    uid = uid.strip().lower() or DEFAULT_USER
+    users = load_users()
+    if uid in users:
+        return uid if matches(password, users[uid]) else None
+    if uid == DEFAULT_USER and hmac.compare_digest(password.encode(), DEFAULT_PW.encode()):
+        return uid
+    return None
+
+
+def sign_in(uid: str):
+    st.session_state.authed = True
+    st.session_state.user = uid
+    st.rerun()
 
 
 if "authed" not in st.session_state:
@@ -203,23 +268,55 @@ if not st.session_state.authed:
             """
 <div class="login-head">
 <h1>Biomarker screening</h1>
-<p>Sign in with your password. The login ID is optional.</p>
+<p>Sign in to continue, or create your own account.</p>
 </div>
 """,
             unsafe_allow_html=True,
         )
-        with st.form("login", border=False):
-            uid = st.text_input("Login ID (optional)", value="anisha26@")
-            pw = st.text_input("Password", type="password")
-            go = st.form_submit_button("Sign in")
-        if go:
-            id_ok = uid.strip() == "" or hmac.compare_digest(uid.strip().encode(), expected_user().encode())
-            pw_ok = hmac.compare_digest(pw.encode(), expected_password().encode())
-            if id_ok and pw_ok:
-                st.session_state.authed = True
-                st.rerun()
-            else:
-                st.error("The login ID or password is not correct. Check both and try again.")
+        if SHOW_DEFAULTS and DEFAULT_USER not in load_users():
+            st.markdown(
+                f'<div class="hint">Default login: ID <b>{DEFAULT_USER}</b> and password <b>{DEFAULT_PW}</b>. '
+                "You can leave the ID empty to use the default account. Change the password after signing in.</div>",
+                unsafe_allow_html=True,
+            )
+
+        tab_in, tab_up = st.tabs(["Sign in", "Create account"])
+
+        with tab_in:
+            with st.form("login", border=False):
+                uid = st.text_input("Login ID (optional)", placeholder="Leave empty for the default account")
+                pw = st.text_input("Password", type="password")
+                go = st.form_submit_button("Sign in")
+            if go:
+                who = check_login(uid, pw)
+                if who:
+                    sign_in(who)
+                else:
+                    st.error("The login ID or password is not correct. Check both and try again.")
+
+        with tab_up:
+            with st.form("signup", border=False):
+                new_id = st.text_input("Choose a login ID", placeholder="3 to 30 letters, numbers or . _ @ -")
+                p1 = st.text_input("Choose a password", type="password", placeholder=f"At least {MIN_PASSWORD} characters")
+                p2 = st.text_input("Confirm password", type="password")
+                create = st.form_submit_button("Create account")
+            if create:
+                nid = new_id.strip().lower()
+                users = load_users()
+                if not re.fullmatch(r"[a-z0-9._@-]{3,30}", nid):
+                    st.error("The login ID must be 3 to 30 characters: letters, numbers or . _ @ -")
+                elif nid == DEFAULT_USER or nid in users:
+                    st.error("That login ID is already taken. Choose another one.")
+                elif len(p1) < MIN_PASSWORD:
+                    st.error(f"The password must be at least {MIN_PASSWORD} characters.")
+                elif p1 != p2:
+                    st.error("The two passwords do not match.")
+                else:
+                    users[nid] = make_record(p1)
+                    if save_users(users):
+                        sign_in(nid)
+                    else:
+                        st.error("The account could not be saved. Please try again.")
     st.stop()
 
 # ----------------------------------------------------------------------------
@@ -385,6 +482,35 @@ with right:
 
 
 st.markdown("<div style='height:2.5rem'></div>", unsafe_allow_html=True)
+st.markdown(
+    f'<div class="range" style="margin:0 0 0.7rem">Signed in as <b>{st.session_state.get("user", DEFAULT_USER)}</b></div>',
+    unsafe_allow_html=True,
+)
+
+with st.expander("Change password"):
+    with st.form("change_password", border=False):
+        cur = st.text_input("Current password", type="password")
+        n1 = st.text_input("New password", type="password", placeholder=f"At least {MIN_PASSWORD} characters")
+        n2 = st.text_input("Confirm new password", type="password")
+        update = st.form_submit_button("Update password")
+    if update:
+        me = st.session_state.get("user", DEFAULT_USER)
+        if check_login(me, cur) is None:
+            st.error("The current password is not correct.")
+        elif len(n1) < MIN_PASSWORD:
+            st.error(f"The new password must be at least {MIN_PASSWORD} characters.")
+        elif n1 != n2:
+            st.error("The two new passwords do not match.")
+        else:
+            users = load_users()
+            users[me] = make_record(n1)
+            if save_users(users):
+                st.success("Password updated. Use the new password next time you sign in.")
+            else:
+                st.error("The password could not be saved. Please try again.")
+
+st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
 if st.button("Sign out", key="signout"):
     st.session_state.authed = False
+    st.session_state.user = None
     st.rerun()
