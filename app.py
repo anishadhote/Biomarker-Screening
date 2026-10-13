@@ -1,9 +1,14 @@
 import hmac
-import pickle
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier, VotingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
 
 st.set_page_config(page_title="Biomarker screening", layout="wide", initial_sidebar_state="collapsed")
 
@@ -20,6 +25,7 @@ CSS = """
   --ink: #16282C;
   --muted: #5C6E70;
   --line: #D3DCDA;
+  --edge: #8FA5A2;
   --accent: #0E5A60;
   --accent-soft: #D9E8E6;
   --flag: #A8651A;
@@ -73,8 +79,12 @@ html, body, .stApp, [class*="css"] {
 }
 [data-testid="stNumberInput"] div[data-baseweb="input"], [data-testid="stTextInput"] div[data-baseweb="input"] {
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 1.5px solid var(--edge);
   border-radius: 6px;
+}
+[data-testid="stNumberInput"] div[data-baseweb="input"]:hover, [data-testid="stTextInput"] div[data-baseweb="input"]:hover { border-color: var(--ink); }
+[data-testid="stNumberInput"] div[data-baseweb="base-input"], [data-testid="stTextInput"] div[data-baseweb="base-input"] {
+  background: transparent; border: none;
 }
 [data-testid="stNumberInput"] div[data-baseweb="input"]:focus-within, [data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {
   border-color: var(--accent);
@@ -131,6 +141,12 @@ html, body, .stApp, [class*="css"] {
 .legend .l::before { background: var(--accent); }
 .legend .r::before { background: var(--flag); }
 
+.warn {
+  background: var(--flag-soft); border: 1px solid #DDBF93; border-radius: 6px;
+  padding: 0.8rem 1rem; margin: 1.3rem 0 0; font-size: 0.88rem; line-height: 1.5; color: #5A3A0E;
+}
+.calc { margin-top: 1.2rem !important; color: var(--ink) !important; }
+
 /* login */
 .login-head { margin: 5vh 0 2rem; }
 .login-head h1 {
@@ -158,9 +174,16 @@ st.markdown(CSS, unsafe_allow_html=True)
 # ----------------------------------------------------------------------------
 # Login
 # ----------------------------------------------------------------------------
+def expected_user() -> str:
+    try:
+        return str(st.secrets.get("APP_USER", "anisha26@"))
+    except Exception:
+        return "anisha26@"
+
+
 def expected_password() -> str:
-    # Set APP_PASSWORD in .streamlit/secrets.toml (or Streamlit Cloud > Settings > Secrets)
-    # to override the default.
+    # Set APP_PASSWORD and APP_USER in .streamlit/secrets.toml (or Streamlit Cloud > Settings > Secrets)
+    # to override the defaults.
     try:
         return str(st.secrets.get("APP_PASSWORD", "1234@"))
     except Exception:
@@ -177,38 +200,58 @@ if not st.session_state.authed:
             """
 <div class="login-head">
 <h1>Biomarker screening</h1>
-<p>Enter the access password to continue.</p>
+<p>Sign in with your password. The login ID is optional.</p>
 </div>
 """,
             unsafe_allow_html=True,
         )
         with st.form("login", border=False):
+            uid = st.text_input("Login ID (optional)", value="anisha26@")
             pw = st.text_input("Password", type="password")
             go = st.form_submit_button("Sign in")
         if go:
-            if hmac.compare_digest(pw.encode(), expected_password().encode()):
+            id_ok = uid.strip() == "" or hmac.compare_digest(uid.strip().encode(), expected_user().encode())
+            pw_ok = hmac.compare_digest(pw.encode(), expected_password().encode())
+            if id_ok and pw_ok:
                 st.session_state.authed = True
                 st.rerun()
             else:
-                st.error("That password is not correct. Check it and try again.")
+                st.error("The login ID or password is not correct. Check both and try again.")
     st.stop()
 
 # ----------------------------------------------------------------------------
-# Model
+# Model (trained from datar2.csv on first load, so it always matches the installed scikit-learn)
 # ----------------------------------------------------------------------------
+FEATURES = ["age", "bmi", "glucose", "insulin", "homa", "leptin", "adiponectin", "resistin", "mcp_1"]
+LABELS = {
+    "age": "age", "bmi": "BMI", "glucose": "glucose", "insulin": "insulin", "homa": "HOMA-IR",
+    "leptin": "leptin", "adiponectin": "adiponectin", "resistin": "resistin", "mcp_1": "MCP-1",
+}
+
+
 @st.cache_resource
-def load_artifacts():
-    with open("best_knn_model.pkl", "rb") as f:
-        model = pickle.load(f)
-    with open("scaler.pkl", "rb") as f:
-        scaler = pickle.load(f)
-    return model, scaler
+def train_model():
+    df = pd.read_csv("datar2.csv")
+    X, y = df[FEATURES], df["classification"]
+    scaled = lambda est: Pipeline([("scale", StandardScaler()), ("model", est)])
+    model = VotingClassifier(
+        [
+            ("logreg", scaled(LogisticRegression(max_iter=2000))),
+            ("svm", scaled(SVC(C=3, probability=True, random_state=0))),
+            ("knn", scaled(KNeighborsClassifier(n_neighbors=7, weights="distance"))),
+            ("forest", RandomForestClassifier(n_estimators=500, min_samples_leaf=2, random_state=0)),
+            ("boost", GradientBoostingClassifier(max_depth=2, n_estimators=100, learning_rate=0.05, random_state=0)),
+        ],
+        voting="soft",
+    )
+    model.fit(X, y)
+    return model, X.min(), X.max()
 
 
 try:
-    model, scaler = load_artifacts()
+    model, lo, hi = train_model()
 except Exception as e:
-    st.error(f"The model files could not be loaded: {e}")
+    st.error(f"The model could not be prepared. Check that datar2.csv is in the same folder as app.py. Details: {e}")
     st.stop()
 
 
@@ -236,14 +279,13 @@ with left:
     with st.form("biomarkers", border=False):
         section("Patient", "Basic details")
         c1, c2 = st.columns(2)
-        age = c1.number_input("Age (years)", min_value=1, max_value=120, value=48)
+        age = c1.number_input("Age (years)", min_value=1, max_value=100, value=48)
         bmi = c2.number_input("BMI (kg/m²)", min_value=10.0, max_value=60.0, value=23.5, step=0.1)
 
-        section("Glucose metabolism", "From a fasting blood test")
-        c1, c2, c3 = st.columns(3)
+        section("Glucose metabolism", "From a fasting blood test. HOMA-IR is calculated from these two values.")
+        c1, c2 = st.columns(2)
         glucose = c1.number_input("Glucose (mg/dL)", min_value=10, max_value=500, value=70)
         insulin = c2.number_input("Insulin (µU/mL)", min_value=1.0, max_value=100.0, value=2.7, step=0.1)
-        homa = c3.number_input("HOMA-IR", min_value=0.1, max_value=30.0, value=0.46, step=0.01)
 
         section("Blood markers", "Hormones and inflammation signals measured in serum")
         c1, c2 = st.columns(2)
@@ -267,13 +309,21 @@ with right:
             unsafe_allow_html=True,
         )
     else:
+        homa = glucose * insulin / 405  # standard HOMA-IR formula
         row = pd.DataFrame(
-            [[age, bmi, glucose, insulin, homa, leptin, adiponectin, resistin, mcp_1]],
-            columns=["age", "bmi", "glucose", "insulin", "homa", "leptin", "adiponectin", "resistin", "mcp_1"],
+            [[age, bmi, glucose, insulin, homa, leptin, adiponectin, resistin, mcp_1]], columns=FEATURES
         )
-        scaled = scaler.transform(row.values)
-        prediction = model.predict(scaled)[0]
-        proba = dict(zip(model.classes_, model.predict_proba(scaled)[0]))
+        proba = dict(zip(model.classes_, model.predict_proba(row)[0]))
+        prediction = 2 if proba.get(2, 0.0) >= 0.5 else 1
+
+        margin = 0.1 * (hi - lo)
+        outside = [LABELS[f] for f in FEATURES if row[f].iloc[0] < lo[f] - margin[f] or row[f].iloc[0] > hi[f] + margin[f]]
+        warn = (
+            f'<div class="warn">These values are outside the range of the recorded cases: {", ".join(outside)}. '
+            "The result is less reliable for this patient.</div>"
+            if outside
+            else ""
+        )
 
         p_healthy = float(proba.get(1, 0.0)) * 100
         p_patient = float(proba.get(2, 0.0)) * 100
@@ -289,7 +339,9 @@ with right:
 <span class="l">Healthy control <b>{p_healthy:.0f}%</b></span>
 <span class="r">Patient <b>{p_patient:.0f}%</b></span>
 </div>
-<p class="note">This compares the entered values with similar recorded cases. It is a screening aid, not a diagnosis. A clinician should review any result.</p>
+<p class="calc">Calculated HOMA-IR: <b>{homa:.2f}</b></p>
+{warn}
+<p class="note">The model learns from 116 recorded cases and is right about three times in four on cases it has not seen. It is a screening aid, not a diagnosis. A clinician should review any result.</p>
 </div>
 """,
             unsafe_allow_html=True,
