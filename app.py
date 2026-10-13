@@ -145,6 +145,9 @@ html, body, .stApp, [class*="css"] {
   background: var(--flag-soft); border: 1px solid #DDBF93; border-radius: 6px;
   padding: 0.8rem 1rem; margin: 1.3rem 0 0; font-size: 0.88rem; line-height: 1.5; color: #5A3A0E;
 }
+.range { margin: -0.7rem 0 0.9rem; font-size: 0.78rem; line-height: 1.4; color: var(--muted); }
+.range b { font-weight: 600; color: var(--ink); }
+[data-testid="stNumberInput"] input::placeholder { color: #7D8F8D; opacity: 1; }
 .calc { margin-top: 1.2rem !important; color: var(--ink) !important; }
 
 /* login */
@@ -275,27 +278,50 @@ def section(title, hint):
 
 left, gap, right = st.columns([5, 0.5, 4])
 
+
+def field(col, key, label, allowed, normal, step, kind="float"):
+    """Number box that starts empty, shows the normal range inside the box and the allowed range below it."""
+    lo_, hi_ = allowed
+    if kind == "int":
+        value = col.number_input(label, min_value=int(lo_), max_value=int(hi_), value=None, step=1,
+                                 placeholder=f"Normal {normal}" if normal else f"{lo_}-{hi_}", key=key)
+    else:
+        value = col.number_input(label, min_value=float(lo_), max_value=float(hi_), value=None, step=step,
+                                 placeholder=f"Normal {normal}" if normal else f"{lo_}-{hi_}", key=key)
+    col.markdown(f'<div class="range">Allowed <b>{lo_}–{hi_}</b></div>', unsafe_allow_html=True)
+    return value
+
+
 with left:
     with st.form("biomarkers", border=False):
         section("Patient", "Basic details")
         c1, c2 = st.columns(2)
-        age = c1.number_input("Age (years)", min_value=1, max_value=100, value=48)
-        bmi = c2.number_input("BMI (kg/m²)", min_value=10.0, max_value=60.0, value=23.5, step=0.1)
+        age = field(c1, "age", "Age (years)", (18, 100), "", 1, "int")
+        bmi = field(c2, "bmi", "BMI (kg/m²)", (10, 60), "18.5–24.9", 0.1)
 
         section("Glucose metabolism", "From a fasting blood test. HOMA-IR is calculated from these two values.")
         c1, c2 = st.columns(2)
-        glucose = c1.number_input("Glucose (mg/dL)", min_value=10, max_value=500, value=70)
-        insulin = c2.number_input("Insulin (µU/mL)", min_value=1.0, max_value=100.0, value=2.7, step=0.1)
+        glucose = field(c1, "glucose", "Glucose (mg/dL)", (30, 500), "70–99", 1, "int")
+        insulin = field(c2, "insulin", "Insulin (µU/mL)", (1, 100), "2–25", 0.1)
 
         section("Blood markers", "Hormones and inflammation signals measured in serum")
         c1, c2 = st.columns(2)
-        leptin = c1.number_input("Leptin (ng/mL)", min_value=1.0, max_value=120.0, value=8.8, step=0.1)
-        adiponectin = c2.number_input("Adiponectin (µg/mL)", min_value=1.0, max_value=50.0, value=9.7, step=0.1)
+        leptin = field(c1, "leptin", "Leptin (ng/mL)", (1, 120), "2–25", 0.1)
+        adiponectin = field(c2, "adiponectin", "Adiponectin (µg/mL)", (1, 50), "3–30", 0.1)
         c3, c4 = st.columns(2)
-        resistin = c3.number_input("Resistin (ng/mL)", min_value=1.0, max_value=100.0, value=8.0, step=0.1)
-        mcp_1 = c4.number_input("MCP-1 (pg/mL)", min_value=10.0, max_value=2000.0, value=417.1, step=1.0)
+        resistin = field(c3, "resistin", "Resistin (ng/mL)", (1, 100), "4–20", 0.1)
+        mcp_1 = field(c4, "mcp_1", "MCP-1 (pg/mL)", (10, 2000), "100–500", 1.0)
 
+        st.markdown(
+            '<div class="range" style="margin-top:0.2rem">Normal and typical ranges are for adults and vary between laboratories. '
+            "Where no normal range is given, the box shows the allowed range.</div>",
+            unsafe_allow_html=True,
+        )
         submitted = st.form_submit_button("Run check")
+
+entered = {"age": age, "BMI": bmi, "glucose": glucose, "insulin": insulin, "leptin": leptin,
+           "adiponectin": adiponectin, "resistin": resistin, "MCP-1": mcp_1}
+missing = [name for name, v in entered.items() if v is None]
 
 with right:
     if not submitted:
@@ -304,6 +330,16 @@ with right:
 <div class="result idle">
 <h2>No result yet</h2>
 <p>Fill in the measurements and select Run check. The result will appear here.</p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+    elif missing:
+        st.markdown(
+            f"""
+<div class="result">
+<h2>Some values are missing</h2>
+<p>Enter a value for: {", ".join(missing)}.</p>
 </div>
 """,
             unsafe_allow_html=True,
